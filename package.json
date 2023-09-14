@@ -1,0 +1,12 @@
+{
+  "name": "-y",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "server": "nodemon server/index.ts",
+    "dev": ""
+  },
+  "author": "",
+  "license": "ISC"
+}
