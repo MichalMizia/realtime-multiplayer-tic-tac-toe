@@ -1,115 +1,113 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, memo, useRef } from "react";
 import Board from "../Board";
 import TitleBox from "@/components/TitleBox";
 import { io } from "socket.io-client";
 import { useParams } from "react-router-dom";
 import { toast } from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
+import { BarLoader } from "react-spinners";
+
 const socket = io("http://localhost:3001");
 
 interface OnlineGameProps {}
 
-const WINNING_COMBINATIONS = [
-  [1, 2, 3],
-  [1, 4, 7],
-  [1, 5, 9],
-  [3, 5, 7],
-  [2, 5, 8],
-  [3, 6, 9],
-  [4, 5, 6],
-  [7, 8, 9],
-];
+type PlayerType = "X" | "O";
+type BoardType = (PlayerType | null)[];
 
-export type PlayerType = "O" | "X";
+interface GameState {
+  board: BoardType;
+  currentPlayer: PlayerType;
+  players: number;
+}
 
-export type BoardType = ("O" | "X" | null)[];
+export type ResultType = "Playing" | "Draw" | "Win" | "Lose";
 
-export type ResultType = "Playing" | "Draw" | "Win";
+export interface GameResultType {
+  result: "Draw" | PlayerType;
+}
 
 const OnlineGame = ({}: OnlineGameProps) => {
   const { gameId: id } = useParams();
-  console.log(id);
 
   const [board, setBoard] = useState<BoardType>(Array(9).fill(null));
+  const playerSymbol = useRef<PlayerType | null>(null);
   const [subtitle, setSubtitle] = useState<string>("");
+  const [isWaiting, setIsWaiting] = useState<boolean>(true);
   const [canMove, setCanMove] = useState<boolean>(true);
-  const [currentPlayer, setCurrentPlayer] = useState<{
-    name: string;
-    figure: PlayerType;
-  }>({ name: "", figure: "X" });
   const [result, setResult] = useState<ResultType>("Playing");
   const navigate = useNavigate();
 
   useEffect(() => {
-    socket.emit("client-ready");
+    socket.emit("client-ready", id);
 
     socket.on("client-refused", () => {
       toast.error("Can't join, there are already 2 players on this board");
       navigate("/");
     });
 
-    socket.on(
-      "client-ready",
-      ({ newPlayer }: { newPlayer: { name: string; figure: PlayerType } }) => {
-        console.log("Client Ready");
-        console.log("1 player");
-        console.log(newPlayer);
-        setCurrentPlayer(newPlayer);
-        setSubtitle("Waiting for the second player to join");
+    socket.on("player-ready", ({ symbol }: { symbol: PlayerType }) => {
+      console.log("Player Ready", symbol);
+
+      playerSymbol.current = symbol;
+      setCanMove(symbol == "X");
+    });
+
+    socket.on("game-ready", () => {
+      console.log("Game ready: ");
+      setIsWaiting(false);
+      setSubtitle("Your symbol: " + playerSymbol.current);
+    });
+
+    socket.on("opponent-joined", () => {
+      toast.success("The opponent has joined.");
+    });
+
+    socket.on("game-state", (gameState: GameState) => {
+      console.log("Game state: ", gameState);
+      setBoard(gameState.board);
+      setCanMove(gameState.currentPlayer == playerSymbol.current);
+    });
+
+    socket.on("game-end", (data: GameResultType) => {
+      const { result } = data;
+      if (result == "Draw") {
+        setResult("Draw");
+      } else {
+        console.log("Result: ", result);
+        if (result == playerSymbol.current) {
+          setResult("Win");
+        } else {
+          setResult("Lose");
+        }
+        setSubtitle((prev) => prev + ". The game has ended");
       }
-    );
+    });
+
+    socket.on("bad-request", (message) => {
+      return toast.error(message);
+    });
+
+    socket.on("opponent-left", () => {
+      toast("Your opponent has left the game.");
+      setIsWaiting(true);
+    });
 
     return () => {
-      socket.emit("client-out", { currentPlayer });
+      socket.disconnect();
     };
   }, []);
 
-  const getAllIndexes = (
-    board: BoardType,
-    currentTurn: PlayerType
-  ): number[] => {
-    var indexes: number[] = [],
-      i = -1;
-    while ((i = board.indexOf(currentTurn, i + 1)) !== -1) {
-      indexes.push(i + 1);
-    }
-    return indexes;
-  };
-
-  const checkForWinOrDraw = (board: BoardType): boolean => {
-    const currentPositions = getAllIndexes(board, currentPlayer.figure);
-
-    let hasEnded = false;
-    WINNING_COMBINATIONS.forEach((winningCombination) => {
-      if (winningCombination.every((num) => currentPositions.includes(num))) {
-        setResult("Win");
-        hasEnded = true;
-      } else if (board.every((sym) => sym !== null) && result === "Playing") {
-        setResult("Draw");
-        hasEnded = true;
-      }
-    });
-
-    return hasEnded;
-  };
-
   const handleBoxClick = (boxId: number): void => {
     if (result !== "Playing") return;
-    const updatedBoard = board.map((value, ind) => {
-      if (ind === boxId) {
-        return currentPlayer.figure;
-      } else {
-        return value;
-      }
-    });
-    setBoard(updatedBoard);
-    // emitting the web socket
-    socket.emit("make-move", { updatedBoard });
-    if (checkForWinOrDraw(updatedBoard)) {
-      return;
-    } else {
-      // setCurrentPlayer((prev) => (prev === "O" ? "X" : "O"));
-    }
+    if (!canMove) return;
+
+    socket.emit("make-move", { boxId });
+  };
+
+  const GAME_END_MESSAGES = {
+    Draw: "Draw.",
+    Win: "You won!",
+    Lose: "You lost.",
   };
 
   return (
@@ -120,18 +118,29 @@ const OnlineGame = ({}: OnlineGameProps) => {
       <div className="flex-1 sticky top-0 lg:justify-end">
         <TitleBox
           message={
-            result === "Win"
-              ? `${currentPlayer} wins!`
-              : result === "Draw"
-              ? "Draw"
-              : `${currentPlayer} to move`
+            isWaiting
+              ? "Waiting."
+              : result !== "Playing"
+              ? GAME_END_MESSAGES[result]
+              : `${canMove ? "Your turn." : "Waiting for your opponent."}`
           }
-          subtitle={subtitle}
+          subtitle={
+            isWaiting ? (
+              <span className="flex items-center justify-start gap-2">
+                Waiting for the second player to join{" "}
+                <BarLoader speedMultiplier={0.5} />
+              </span>
+            ) : (
+              subtitle
+            )
+          }
         />
       </div>
       <div className="flex-[2] lg:justify-start">
         <Board
-          turn={currentPlayer.figure}
+          turn={
+            playerSymbol.current && canMove ? playerSymbol.current : undefined
+          }
           onClick={handleBoxClick}
           board={board}
         />

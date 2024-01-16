@@ -3,7 +3,7 @@ import { ReactNode } from "react";
 
 interface TitleBoxProps {
   message: string;
-  subtitle?: string;
+  subtitle?: string | ReactNode;
   main?: ReactNode;
   footer?: ReactNode;
 }
